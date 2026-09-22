@@ -1,0 +1,25 @@
+[package]
+name = "hushtype-engine"
+description = "Local speech engine: microphone capture, VAD, whisper.cpp transcription, model management"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# GPU backends for whisper.cpp (need the matching SDK at build time).
+cuda = ["whisper-rs/cuda"]
+vulkan = ["whisper-rs/vulkan"]
+
+[dependencies]
+hushtype-text = { path = "../text" }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+whisper-rs = { version = "0.16", features = ["log_backend"] }
+cpal = "0.18"
+ureq = { version = "3", default-features = false, features = ["native-tls", "win-system-proxy"] }
+sha2 = "0.11"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }

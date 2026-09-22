@@ -1,0 +1,9 @@
+[package]
+name = "hushtype-text"
+description = "Transcript post-processing: fillers, punctuation, capitalization, dictionary"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true

@@ -1,0 +1,37 @@
+﻿[
+    {
+        "id":  "short",
+        "file":  "short.wav",
+        "text":  "Create a function that fetches the user profile and returns the email address."
+    },
+    {
+        "id":  "question",
+        "file":  "question.wav",
+        "text":  "Can you check whether the build passed on the main branch?"
+    },
+    {
+        "id":  "punct",
+        "file":  "punct.wav",
+        "text":  "Hello comma how are you question mark"
+    },
+    {
+        "id":  "tech",
+        "file":  "tech.wav",
+        "text":  "We deploy the TypeScript service to Kubernetes and store the data in PostgreSQL."
+    },
+    {
+        "id":  "terminal",
+        "file":  "terminal.wav",
+        "text":  "git status"
+    },
+    {
+        "id":  "medium",
+        "file":  "medium.wav",
+        "text":  "Tomorrow morning I will review the pull request, update the documentation, and then schedule a short meeting with the design team to go over the new onboarding flow."
+    },
+    {
+        "id":  "long",
+        "file":  "long.wav",
+        "text":  "Voice typing works best when you speak in complete sentences. Take a short pause between ideas, and the application will add punctuation for you. Everything is processed locally on this computer, so no audio is ever uploaded to a server. If a word is recognised incorrectly, add it to the dictionary and it will be spelled correctly next time."
+    }
+]

@@ -1,0 +1,25 @@
+[package]
+name = "hushtype"
+description = "Private, local voice typing for Windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "hushtype"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+hushtype-engine = { path = "../../../crates/engine" }
+hushtype-platform = { path = "../../../crates/platform" }
+hushtype-text = { path = "../../../crates/text" }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+tauri = { version = "2.11", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+
+[features]
+# GPU builds of whisper.cpp (require the CUDA toolkit / Vulkan SDK to compile).
+cuda = ["hushtype-engine/cuda"]
+vulkan = ["hushtype-engine/vulkan"]

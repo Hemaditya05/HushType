@@ -1,0 +1,19 @@
+[env]
+# Portable CPU baseline: AVX2/FMA (Intel Haswell 2013+, AMD Zen/Excavator+).
+# GGML_NATIVE would bake in the build machine's instruction set.
+GGML_NATIVE = "OFF"
+GGML_AVX = "ON"
+GGML_AVX2 = "ON"
+GGML_FMA = "ON"
+GGML_F16C = "ON"
+GGML_BMI2 = "ON"
+# The `cmake` crate replaces MSVC's default per-config flags and drops /O2,
+# which makes whisper.cpp ~50x slower. Spell the flags out.
+CMAKE_C_FLAGS_RELEASE = "-nologo -MT -O2 -Ob2 -DNDEBUG -W0"
+CMAKE_CXX_FLAGS_RELEASE = "-nologo -MT -O2 -Ob2 -DNDEBUG -EHsc -W0 /utf-8"
+CMAKE_C_FLAGS_RELWITHDEBINFO = "-nologo -MT -O2 -Ob1 -DNDEBUG -W0"
+CMAKE_CXX_FLAGS_RELWITHDEBINFO = "-nologo -MT -O2 -Ob1 -DNDEBUG -EHsc -W0 /utf-8"
+
+[target.x86_64-pc-windows-msvc]
+# Static CRT: the app runs without the VC++ redistributable installed.
+rustflags = ["-C", "target-feature=+crt-static"]
