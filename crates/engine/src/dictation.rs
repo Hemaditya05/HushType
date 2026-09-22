@@ -102,7 +102,9 @@ pub struct Dictation {
 const CHUNK_MIN_SECS: usize = 12;
 const CHUNK_MAX_SECS: usize = 28;
 const PARTIAL_INTERVAL: Duration = Duration::from_millis(450);
-const KEEP_MARGIN: usize = SAMPLE_RATE * 3 / 10; // 300 ms around speech
+// Audio kept around detected speech. Generous so quiet first/last words that
+// the energy VAD misses are still transcribed.
+const KEEP_MARGIN: usize = SAMPLE_RATE; // 1 s
 
 impl Dictation {
     pub fn start(
