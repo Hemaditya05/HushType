@@ -288,8 +288,10 @@ fn ensure_loaded(
     let mut l = Loaded { id: id.to_string(), english_only: info.english_only, _ctx: ctx, state };
     // Warm-up: the first inference allocates compute buffers; do it now
     // (typically while the user is still speaking) rather than on their audio.
+    // Warmed on the final path so the beam-search buffers exist before the
+    // first sentence the user is actually waiting for.
     let warm = Request { audio: vec![0.0; SAMPLE_RATE], language: Some("en".into()), prompt: String::new() };
-    let _ = run(&mut l, warm, threads, true, &Shared::dummy());
+    let _ = run(&mut l, warm, threads, false, &Shared::dummy());
     let load_ms = t0.elapsed().as_millis() as u64;
     let backend = match crate::sys::gpu_backends().first() {
         Some(b) => format!("{b} (GPU)"),
@@ -318,20 +320,53 @@ unsafe extern "C" fn abort_partial(data: *mut std::ffi::c_void) -> bool {
     s.finals_pending.load(Ordering::Relaxed) > 0 || s.cancel_partial.load(Ordering::Relaxed)
 }
 
+/// Whisper is trained on normalized audio and loses words on quiet input, which
+/// is what most laptop microphones produce. Remove any DC offset and bring the
+/// level up to about -19 dBFS RMS, limited so that noise in a near-silent clip
+/// is not amplified into something the decoder tries to read.
+fn normalize(audio: &[f32]) -> Option<Vec<f32>> {
+    if audio.len() < 160 {
+        return None;
+    }
+    let mean = audio.iter().sum::<f32>() / audio.len() as f32;
+    let mut sum_sq = 0.0f64;
+    let mut peak = 0.0f32;
+    for &s in audio {
+        let x = s - mean;
+        sum_sq += (x as f64) * (x as f64);
+        peak = peak.max(x.abs());
+    }
+    let rms = (sum_sq / audio.len() as f64).sqrt() as f32;
+    if rms < 1e-5 || peak < 1e-4 {
+        return None; // silence: leave it alone
+    }
+    // Aim at -19 dBFS RMS, amplifying by at most 20 dB. The gain deliberately
+    // ignores the peak: a single keyboard click or cough would otherwise cancel
+    // the correction for the whole recording. Samples are clamped instead, so
+    // at worst that one transient is flattened.
+    let gain = (0.112 / rms).min(10.0);
+    if mean.abs() < 1e-4 && (0.8..1.25).contains(&gain) {
+        return None; // already in range
+    }
+    Some(audio.iter().map(|&s| ((s - mean) * gain).clamp(-0.99, 0.99)).collect())
+}
+
 fn run(l: &mut Loaded, req: Request, threads: usize, partial: bool, shared: &Shared) -> Result<Transcript, EngineError> {
     let t0 = Instant::now();
     let Request { audio, language, prompt } = req;
+    let gained = normalize(&audio);
+    let leveled: &[f32] = gained.as_deref().unwrap_or(&audio);
     // whisper.cpp ignores input shorter than 1 s; pad with silence.
     let min = SAMPLE_RATE + SAMPLE_RATE / 10;
     let padded;
-    let input: &[f32] = if audio.len() < min {
+    let input: &[f32] = if leveled.len() < min {
         let mut p = Vec::with_capacity(min);
-        p.extend_from_slice(&audio);
+        p.extend_from_slice(leveled);
         p.resize(min, 0.0);
         padded = p;
         &padded
     } else {
-        &audio
+        leveled
     };
 
     let lang = if l.english_only { Some("en".to_string()) } else { language.filter(|s| !s.is_empty() && s != "auto") };
@@ -341,9 +376,13 @@ fn run(l: &mut Loaded, req: Request, threads: usize, partial: bool, shared: &Sha
     // with identical output in our tests. If the decoder then loops (a known
     // failure mode of reduced windows, mostly on tiny models), redo it with
     // the full window.
+    //
+    // 512 is the smallest window that is consistently as accurate as the full
+    // one; below it short utterances start losing words, so that is the floor
+    // for the text the user actually gets. Live previews may go lower.
     let secs = input.len() as f32 / SAMPLE_RATE as f32;
-    let margin = if partial { 128.0 } else { 256.0 };
-    let mut ctx = (((secs * 50.0 + margin) / 64.0).ceil() as i32 * 64).clamp(256, 1500);
+    let (margin, floor) = if partial { (192.0, 384) } else { (384.0, 512) };
+    let mut ctx = (((secs * 50.0 + margin) / 64.0).ceil() as i32 * 64).clamp(floor, 1500);
     if std::env::var_os("HUSHTYPE_FULL_CTX").is_some() {
         ctx = 1500;
     }
@@ -387,11 +426,25 @@ fn decode(
     ctx: i32,
     shared: &Shared,
 ) -> Result<String, EngineError> {
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_n_threads(threads as i32);
+    // Beam search is what OpenAI's reference implementation uses and is
+    // noticeably more accurate on the short, fast speech people dictate.
+    // Previews are throwaway text, so they take the cheap greedy path.
+    let strategy = if partial {
+        SamplingStrategy::Greedy { best_of: 1 }
+    } else {
+        SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 }
+    };
+    let mut params = FullParams::new(strategy);
+    // Previews leave cores free: they run while the user is speaking and
+    // typing, and pinning every core there is what makes the machine feel
+    // stuck. A final gets the whole budget because the user is waiting on it.
+    params.set_n_threads(if partial { (threads / 2).max(1) as i32 } else { threads as i32 });
     params.set_translate(false);
     params.set_no_context(true);
-    params.set_no_timestamps(true);
+    // Suppressing timestamp tokens makes whisper.cpp drop audio and omit words
+    // (ggml-org/whisper.cpp#2186). We read segment text, not timestamps, so
+    // there is nothing to gain from turning them off.
+    params.set_no_timestamps(false);
     params.set_single_segment(partial);
     params.set_print_special(false);
     params.set_print_progress(false);
@@ -400,6 +453,10 @@ fn decode(
     params.set_suppress_blank(true);
     params.set_suppress_nst(true);
     params.set_temperature(0.0);
+    // The 0.6 default throws away quiet or clipped-short utterances as "no
+    // speech". We would rather transcribe them; the cleanup pass already drops
+    // whisper's stock hallucinations.
+    params.set_no_speech_thold(0.85);
     params.set_language(Some(lang.unwrap_or("auto")));
     if !prompt.is_empty() {
         params.set_initial_prompt(prompt);
@@ -425,6 +482,14 @@ fn decode(
     let mut text = String::new();
     for seg in l.state.as_iter() {
         if let Ok(s) = seg.to_str_lossy() {
+            // Segments normally keep the leading space of their first token,
+            // but never run two of them together if one does not.
+            let joined = !text.is_empty()
+                && !text.ends_with(char::is_whitespace)
+                && !s.starts_with(char::is_whitespace);
+            if joined {
+                text.push(' ');
+            }
             text.push_str(&s);
         }
     }

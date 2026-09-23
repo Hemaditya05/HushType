@@ -10,7 +10,9 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::{GetLastError, LPARAM, WPARAM};
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::System::Threading::{
+    GetCurrentThread, GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
     MOD_WIN, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
@@ -54,6 +56,9 @@ impl HotkeyManager {
         std::thread::Builder::new()
             .name("hotkey".into())
             .spawn(move || unsafe {
+                // Above the transcription threads: a key press or release must
+                // still be seen immediately while the CPU is busy decoding.
+                let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
                 let mut msg = MSG::default();
                 // Create the thread's message queue before announcing it.
                 let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);

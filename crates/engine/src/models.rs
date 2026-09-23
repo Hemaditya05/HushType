@@ -175,7 +175,11 @@ pub fn delete(models_dir: &Path, id: &str) -> std::io::Result<()> {
 /// Suggest a default model for this machine.
 pub fn recommended(total_ram: Option<u64>, logical_cores: usize, has_gpu_backend: bool) -> &'static str {
     let ram_gb = total_ram.map(|b| b / (1 << 30)).unwrap_or(8);
-    if has_gpu_backend && ram_gb >= 8 {
+    // Small is the accuracy step up from Base and costs about 3x the CPU time.
+    // Because long speech is transcribed in chunks while it is still being
+    // spoken, a machine with plenty of cores absorbs that without the user
+    // waiting any longer.
+    if ram_gb >= 8 && (has_gpu_backend || logical_cores >= 12) {
         "small.en"
     } else if ram_gb < 4 || logical_cores < 4 {
         "tiny.en"

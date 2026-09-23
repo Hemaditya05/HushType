@@ -2,6 +2,8 @@
 
 All numbers below were measured on the development machine (Intel i7-1165G7 laptop, 4 cores / 8 threads, 16 GB RAM, Intel Iris Xe, no discrete GPU; Windows 11) with the release build. Nothing is estimated. GPU usage: none (CPU build; the iGPU is not used). Reproduce with `hushtype-bench run` and `scripts/profile.ps1`.
 
+> **These figures are from 0.1.0 and have not been re-measured since.** The transcription pipeline changed afterwards (beam search and timestamps on for final text, rate-limited previews over a bounded window, 6 s chunking, gain normalization), which trades some CPU on the final decode for accuracy and takes a large amount of CPU away from the live preview. Latency and memory in the table below no longer describe the current build.
+
 ## Summary
 
 - Idle in tray: **13.6 MB** working set, **0.00% CPU**, 1 process. Microphone off.

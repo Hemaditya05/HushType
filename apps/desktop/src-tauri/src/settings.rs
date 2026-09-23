@@ -77,9 +77,9 @@ impl Default for Settings {
             language: "en".into(),
             microphone: String::new(),
             silence_timeout_ms: 2000,
-            vad_sensitivity: 50,
+            vad_sensitivity: 60,
             live_preview: true,
-            unload_after_min: 15,
+            unload_after_min: 5,
             load_model_at_startup: false,
             max_recording_sec: 300,
             remove_fillers: true,
@@ -124,7 +124,7 @@ impl Settings {
         self.max_recording_sec = self.max_recording_sec.clamp(10, 1800);
         self.history_limit = self.history_limit.clamp(10, 10_000);
         if !matches!(self.unload_after_min, 0 | 5 | 15 | 30 | 60) {
-            self.unload_after_min = 15;
+            self.unload_after_min = 5;
         }
         if hushtype_engine::models::find(&self.model).is_none() {
             self.model = hushtype_engine::models::DEFAULT_MODEL.into();
@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn invalid_values_are_sanitized() {
         let s = Settings { unload_after_min: 7, model: "nope".into(), silence_timeout_ms: 1, ..Default::default() }.sanitized();
-        assert_eq!(s.unload_after_min, 15);
+        assert_eq!(s.unload_after_min, 5);
         assert_eq!(s.model, hushtype_engine::models::DEFAULT_MODEL);
         assert_eq!(s.silence_timeout_ms, 500);
     }

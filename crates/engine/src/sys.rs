@@ -70,3 +70,17 @@ pub fn memory() -> Option<(u64, u64)> {
 pub fn memory() -> Option<(u64, u64)> {
     None
 }
+
+/// Raise the calling thread above the transcription threads. The microphone
+/// reader must keep draining the capture queue while whisper is decoding,
+/// otherwise the driver overruns its buffer and audio is simply lost.
+#[cfg(windows)]
+pub fn prioritize_current_thread() {
+    use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL};
+    unsafe {
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn prioritize_current_thread() {}

@@ -99,12 +99,21 @@ pub struct Dictation {
     thread: Option<JoinHandle<()>>,
 }
 
-const CHUNK_MIN_SECS: usize = 12;
-const CHUNK_MAX_SECS: usize = 28;
+// Long speech is split at pauses and transcribed while the user keeps talking.
+// Short chunks keep every preview cheap and leave almost nothing to do when the
+// key is released; the previous text is passed along as a prompt so whisper
+// still has the context it needs across a split.
+const CHUNK_MIN_SECS: usize = 6;
+const CHUNK_MAX_SECS: usize = 20;
 const PARTIAL_INTERVAL: Duration = Duration::from_millis(450);
+/// Most a preview will ever transcribe. Without this the cost of a preview
+/// grows with the chunk until they run back to back and peg every core.
+const PARTIAL_WINDOW_SECS: usize = 10;
 // Audio kept around detected speech. Generous so quiet first/last words that
 // the energy VAD misses are still transcribed.
 const KEEP_MARGIN: usize = SAMPLE_RATE; // 1 s
+/// Recordings shorter than this are transcribed whole, silence included.
+const TRIM_ABOVE_SECS: usize = 12;
 
 impl Dictation {
     pub fn start(
@@ -123,6 +132,7 @@ impl Dictation {
         let thread = std::thread::Builder::new()
             .name("dictation".into())
             .spawn(move || {
+                crate::sys::prioritize_current_thread();
                 let ev = on_event;
                 run(&engine, &opts, &f, &ev);
                 f.finished.store(true, Ordering::SeqCst);
@@ -212,6 +222,7 @@ fn run(engine: &Arc<Engine>, opts: &DictationOptions, flags: &Flags, emit: &(dyn
 
     let partial_busy = Arc::new(AtomicBool::new(false));
     let partial_text: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let partial_cost = Arc::new(AtomicU64::new(0)); // ms the last preview took
     let mut last_partial_at = Instant::now();
     let mut last_partial_sample = 0usize;
     let mut last_shown = String::new();
@@ -265,7 +276,7 @@ fn run(engine: &Arc<Engine>, opts: &DictationOptions, flags: &Flags, emit: &(dyn
 
         // Commit a chunk at a pause once it is long enough (or when it must).
         let secs = chunk.len() / SAMPLE_RATE;
-        if (secs >= CHUNK_MIN_SECS && !vad.in_speech() && vad.silence_ms >= 400) || secs >= CHUNK_MAX_SECS {
+        if (secs >= CHUNK_MIN_SECS && !vad.in_speech() && vad.silence_ms >= 300) || secs >= CHUNK_MAX_SECS {
             let audio = std::mem::replace(&mut chunk, Vec::with_capacity(SAMPLE_RATE * CHUNK_MAX_SECS));
             let had_speech = vad.speech_ms.saturating_sub(chunk_speech_start_ms) >= 200;
             chunk_start += audio.len();
@@ -307,29 +318,41 @@ fn run(engine: &Arc<Engine>, opts: &DictationOptions, flags: &Flags, emit: &(dyn
             }
         }
 
-        // Offer a new partial preview.
+        // Offer a new partial preview. Previews are a convenience, not the
+        // result, so they are rate-limited by how long the last one took: they
+        // never use more than roughly 40% of the time, which keeps the machine
+        // responsive while the user is speaking and typing.
         let new_speech = vad.last_speech_sample > last_partial_sample;
+        let gap = PARTIAL_INTERVAL.max(Duration::from_millis(partial_cost.load(Ordering::Relaxed) * 5 / 2));
         if opts.partials
             && vad.ever_speech
             && new_speech
             && chunk.len() >= SAMPLE_RATE / 2
-            && last_partial_at.elapsed() >= PARTIAL_INTERVAL
+            && last_partial_at.elapsed() >= gap
             && !partial_busy.swap(true, Ordering::SeqCst)
         {
             last_partial_at = Instant::now();
             last_partial_sample = vad.last_speech_sample;
             let busy = partial_busy.clone();
             let slot = partial_text.clone();
+            let cost = partial_cost.clone();
             let previous = committed.join(" ");
+            // Only the tail of a long chunk: a preview of the words just said
+            // is what the user is looking at, and a bounded window keeps the
+            // cost flat however long they talk.
+            let window = SAMPLE_RATE * PARTIAL_WINDOW_SECS;
+            let from = chunk.len().saturating_sub(window);
             let req = Request {
-                audio: chunk.clone(),
+                audio: chunk[from..].to_vec(),
                 language: opts.language.clone(),
                 prompt: build_prompt(&opts.prompt, &previous),
             };
+            let began = Instant::now();
             engine.submit_partial(req, move |res| {
                 if let Ok(t) = res {
                     *slot.lock().unwrap() = Some(t.text);
                 }
+                cost.store(began.elapsed().as_millis() as u64, Ordering::Relaxed);
                 busy.store(false, Ordering::SeqCst);
             });
         }
@@ -356,13 +379,27 @@ fn run(engine: &Arc<Engine>, opts: &DictationOptions, flags: &Flags, emit: &(dyn
     }
     emit(DictationEvent::Processing);
 
-    // Final chunk, trimmed to the speech plus a small margin.
-    let chunk_has_speech = vad.speech_ms.saturating_sub(chunk_speech_start_ms) >= 150;
-    if chunk_has_speech {
-        let end_abs = (vad.last_speech_sample + KEEP_MARGIN).min(total_samples);
-        let end = end_abs.saturating_sub(chunk_start).clamp(0, chunk.len());
-        let begin = if finals.is_empty() {
+    // Final chunk. Trimming it to what the energy VAD heard only pays for
+    // itself on long recordings, and it is the one place where a quiet first or
+    // last word can be thrown away before whisper ever sees it — so anything
+    // short goes to the transcriber exactly as recorded. Likewise, if the user
+    // spoke at any point in the session the tail is transcribed even when the
+    // VAD did not mark it as speech.
+    let speech_in_chunk = vad.speech_ms.saturating_sub(chunk_speech_start_ms) >= 150;
+    if (speech_in_chunk || vad.ever_speech) && chunk.len() >= SAMPLE_RATE / 4 {
+        let trim = chunk.len() > SAMPLE_RATE * TRIM_ABOVE_SECS && speech_in_chunk;
+        let end = if trim {
+            (vad.last_speech_sample + KEEP_MARGIN).min(total_samples).saturating_sub(chunk_start).clamp(0, chunk.len())
+        } else {
+            chunk.len()
+        };
+        let begin = if trim && finals.is_empty() {
             vad.first_speech_sample.unwrap_or(0).saturating_sub(KEEP_MARGIN).saturating_sub(chunk_start).min(end)
+        } else if !speech_in_chunk {
+            // Nothing heard here at all — only the last moments can hold a word
+            // the VAD was too deaf for. Transcribing the whole silence would
+            // just cost time and invite a hallucination.
+            end.saturating_sub(SAMPLE_RATE * 3)
         } else {
             0
         };
@@ -406,8 +443,11 @@ fn run(engine: &Arc<Engine>, opts: &DictationOptions, flags: &Flags, emit: &(dyn
         }
     }
     let raw = committed.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
+    // Throwing away a transcript because the energy VAD under-counted a quiet
+    // voice is worse than the occasional stray word, so the floor here is only
+    // high enough to catch a key pressed and released with nothing said.
     let speech_ms = vad.speech_ms;
-    if speech_ms < 250 || raw.is_empty() || (speech_ms < 1500 && hushtype_text::is_hallucination(&raw)) {
+    if speech_ms < 120 || raw.is_empty() || (speech_ms < 1200 && hushtype_text::is_hallucination(&raw)) {
         emit(DictationEvent::NoSpeech);
         return;
     }
