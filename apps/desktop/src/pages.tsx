@@ -113,6 +113,8 @@ export function SettingsPage({ ctx, only }: { ctx: Ctx; only?: "microphone" }) {
         <Row label="Unload model when inactive" hint="Frees memory; the model reloads automatically when you dictate.">
           <select value={s.unloadAfterMin} onChange={(e) => ctx.update({ unloadAfterMin: +e.target.value })}>
             <option value={0}>Never</option>
+            <option value={1}>After 1 minute</option>
+            <option value={2}>After 2 minutes</option>
             <option value={5}>After 5 minutes</option>
             <option value={15}>After 15 minutes</option>
             <option value={30}>After 30 minutes</option>

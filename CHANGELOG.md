@@ -11,7 +11,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - Long speech is split into chunks at pauses from 6 s (was 12 s), so more of the work happens while you are still talking and less after you release the key.
 - Short recordings are transcribed exactly as captured; voice-activity trimming now only applies above 12 s, where it saves real time.
 - The microphone reader and the shortcut listener run above the transcription threads, so key presses and audio are not delayed by a decode in progress.
-- Default model unload timer lowered to 5 minutes, and default microphone sensitivity raised slightly.
+- Keep recording for 250 ms after the shortcut is released. The microphone used to close on the keystroke, discarding whatever the audio driver still held along with the end of the last word.
+- Splitting a long dictation now needs a longer real pause, so a split cannot land inside a softly spoken word.
+- Default model unload timer lowered to 2 minutes, with 1- and 2-minute choices added, and an existing settings file still on the old 15-minute default is moved to 2 on first launch. A few hundred MB of model should not sit in memory long after the user has stopped dictating.
+- Default microphone sensitivity raised slightly.
 
 ## [0.1.0] - 2026-09-22
 

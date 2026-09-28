@@ -49,7 +49,7 @@ Models are downloaded from the official whisper.cpp repository on Hugging Face a
 
 The default (`base.en`) was chosen from measurements on a 4-core i7-1165G7 laptop: about 0.75 s to transcribe a 5 s sentence on CPU, with 0 % word error rate on the test sentences. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-**Memory lifecycle:** the model loads when you first dictate (loading overlaps with you speaking), stays loaded while you use it, and is unloaded after 5 minutes of inactivity by default (*Never / 5 / 15 / 30 / 60 min*). "Load model at startup" is off by default.
+**Memory lifecycle:** the model loads when you first dictate (loading overlaps with you speaking), stays loaded while you use it, and is unloaded after 2 minutes of inactivity by default (*Never / 1 / 2 / 5 / 15 / 30 / 60 min*). "Load model at startup" is off by default.
 
 **GPU:** the default build runs on the CPU, which is the fastest option on most laptops without a discrete GPU. whisper.cpp's CUDA and Vulkan backends can be enabled at build time (`--features cuda` or `--features vulkan`, with the CUDA toolkit / Vulkan SDK installed); the app then uses the GPU and falls back to the CPU if none is found.
 

@@ -62,7 +62,14 @@ pub struct Settings {
     pub history_limit: u32,
 
     pub onboarded: bool,
+    /// Bumped when a stored file needs adjusting; absent in files written
+    /// before migrations existed, which serde reads as 0.
+    #[serde(default)]
+    pub config_version: u32,
 }
+
+/// Current settings generation. See `migrated`.
+const CONFIG_VERSION: u32 = 1;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -79,7 +86,7 @@ impl Default for Settings {
             silence_timeout_ms: 2000,
             vad_sensitivity: 60,
             live_preview: true,
-            unload_after_min: 5,
+            unload_after_min: 2,
             load_model_at_startup: false,
             max_recording_sec: 300,
             remove_fillers: true,
@@ -96,20 +103,46 @@ impl Default for Settings {
             store_audio: false,
             history_limit: 500,
             onboarded: false,
+            // 0, not CONFIG_VERSION: the container-level serde default fills this
+            // in for files written before the field existed, and those are exactly
+            // the ones that still need migrating.
+            config_version: 0,
         }
     }
 }
 
 impl Settings {
     pub fn load(paths: &Paths) -> Settings {
-        match std::fs::read_to_string(paths.settings()) {
+        let stored = match std::fs::read_to_string(paths.settings()) {
             Ok(s) => serde_json::from_str::<Settings>(&s).unwrap_or_else(|e| {
                 log::warn!("settings.json unreadable ({e}); using defaults");
                 Settings::default()
             }),
             Err(_) => Settings::default(),
+        };
+        let before = stored.config_version;
+        let s = stored.migrated().sanitized();
+        if before != s.config_version {
+            // Write the result back, so a value the user picks afterwards is
+            // never migrated a second time.
+            let _ = s.save(paths);
         }
-        .sanitized()
+        s
+    }
+
+    /// Bring a stored file forward. A setting the user never touched should not
+    /// keep a value we no longer think is right, but anything they chose
+    /// themselves is left alone.
+    fn migrated(mut self) -> Settings {
+        if self.config_version < 1 {
+            // 15 minutes was the old default, and it holds a few hundred MB of
+            // model in memory long after the user has stopped dictating.
+            if self.unload_after_min == 15 {
+                self.unload_after_min = 2;
+            }
+        }
+        self.config_version = CONFIG_VERSION;
+        self
     }
 
     pub fn save(&self, paths: &Paths) -> Result<(), String> {
@@ -123,8 +156,8 @@ impl Settings {
         self.vad_sensitivity = self.vad_sensitivity.min(100);
         self.max_recording_sec = self.max_recording_sec.clamp(10, 1800);
         self.history_limit = self.history_limit.clamp(10, 10_000);
-        if !matches!(self.unload_after_min, 0 | 5 | 15 | 30 | 60) {
-            self.unload_after_min = 5;
+        if !matches!(self.unload_after_min, 0 | 1 | 2 | 5 | 15 | 30 | 60) {
+            self.unload_after_min = 2;
         }
         if hushtype_engine::models::find(&self.model).is_none() {
             self.model = hushtype_engine::models::DEFAULT_MODEL.into();
@@ -181,7 +214,7 @@ mod tests {
     #[test]
     fn invalid_values_are_sanitized() {
         let s = Settings { unload_after_min: 7, model: "nope".into(), silence_timeout_ms: 1, ..Default::default() }.sanitized();
-        assert_eq!(s.unload_after_min, 5);
+        assert_eq!(s.unload_after_min, 2);
         assert_eq!(s.model, hushtype_engine::models::DEFAULT_MODEL);
         assert_eq!(s.silence_timeout_ms, 500);
     }

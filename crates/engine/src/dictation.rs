@@ -114,6 +114,8 @@ const PARTIAL_WINDOW_SECS: usize = 10;
 const KEEP_MARGIN: usize = SAMPLE_RATE; // 1 s
 /// Recordings shorter than this are transcribed whole, silence included.
 const TRIM_ABOVE_SECS: usize = 12;
+/// How much longer the microphone stays open after the key is released.
+const RELEASE_GRACE: Duration = Duration::from_millis(250);
 
 impl Dictation {
     pub fn start(
@@ -228,6 +230,7 @@ fn run(engine: &Arc<Engine>, opts: &DictationOptions, flags: &Flags, emit: &(dyn
     let mut last_shown = String::new();
     let mut first_partial_ms: Option<u64> = None;
     let mut auto_stopped = false;
+    let mut stopping: Option<Instant> = None;
 
     loop {
         if flags.cancel.load(Ordering::SeqCst) {
@@ -236,8 +239,16 @@ fn run(engine: &Arc<Engine>, opts: &DictationOptions, flags: &Flags, emit: &(dyn
             emit(DictationEvent::Cancelled);
             return;
         }
+        // Keep recording for a moment after the key is released. People let go
+        // as they finish the last syllable, and whatever the microphone has
+        // already handed to the driver is still on its way to us; closing the
+        // capture the instant the key comes up cuts the end of the sentence.
         if flags.stop.load(Ordering::SeqCst) {
-            break;
+            match stopping {
+                None => stopping = Some(Instant::now()),
+                Some(t) if t.elapsed() >= RELEASE_GRACE => break,
+                Some(_) => {}
+            }
         }
         buf.clear();
         if let Err(e) = cap.read(&mut buf, Duration::from_millis(30)) {
@@ -255,7 +266,7 @@ fn run(engine: &Arc<Engine>, opts: &DictationOptions, flags: &Flags, emit: &(dyn
         chunk.extend_from_slice(&buf);
 
         let elapsed = started.elapsed();
-        let auto_stop = flags.auto_stop_ms.load(Ordering::Relaxed);
+        let auto_stop = if stopping.is_some() { 0 } else { flags.auto_stop_ms.load(Ordering::Relaxed) };
         if auto_stop > 0 && vad.ever_speech && vad.silence_ms as u64 >= auto_stop {
             auto_stopped = true;
             break;
@@ -276,7 +287,7 @@ fn run(engine: &Arc<Engine>, opts: &DictationOptions, flags: &Flags, emit: &(dyn
 
         // Commit a chunk at a pause once it is long enough (or when it must).
         let secs = chunk.len() / SAMPLE_RATE;
-        if (secs >= CHUNK_MIN_SECS && !vad.in_speech() && vad.silence_ms >= 300) || secs >= CHUNK_MAX_SECS {
+        if (secs >= CHUNK_MIN_SECS && !vad.in_speech() && vad.silence_ms >= 450) || secs >= CHUNK_MAX_SECS {
             let audio = std::mem::replace(&mut chunk, Vec::with_capacity(SAMPLE_RATE * CHUNK_MAX_SECS));
             let had_speech = vad.speech_ms.saturating_sub(chunk_speech_start_ms) >= 200;
             chunk_start += audio.len();
@@ -325,6 +336,7 @@ fn run(engine: &Arc<Engine>, opts: &DictationOptions, flags: &Flags, emit: &(dyn
         let new_speech = vad.last_speech_sample > last_partial_sample;
         let gap = PARTIAL_INTERVAL.max(Duration::from_millis(partial_cost.load(Ordering::Relaxed) * 5 / 2));
         if opts.partials
+            && stopping.is_none()
             && vad.ever_speech
             && new_speech
             && chunk.len() >= SAMPLE_RATE / 2
